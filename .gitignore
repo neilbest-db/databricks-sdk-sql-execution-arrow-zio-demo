@@ -1,0 +1,10 @@
+.scala-build/
+.ammonite/
+.bloop/
+.bsp/
+.metals/
+
+delta/
+out/
+
+*.jar*
