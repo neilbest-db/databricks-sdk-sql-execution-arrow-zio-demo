@@ -19,6 +19,10 @@ trait SqlExecutionService {
 
   def getState( sqlStatement: SqlStatement): ZIO[ Any, Throwable, sql.StatementState]
 
+  // def getChunkCount( sqlStatement: SqlStatement): ZIO[ Any, Throwable, Long]
+
+  // def getChunk( n: Long): ZIO[ Any, Throwable, 
+
 }
 
 
@@ -39,6 +43,16 @@ object SqlExecutionService {
   def getState( statement: SqlStatement) =
     ZIO.serviceWithZIO[ SqlExecutionService](
       s => ZIO.attempt( s.getState( statement)))
+
+  /*
+  def getChunkCount( statement: SqlStatement) =
+    ZIO.serviceWithZIO[ SqlExecutionService](
+      s => ZIO.attempt( s.getChunkCount( statement)))
+
+  def getChunk( statement: SqlStatement) =
+    ZIO.serviceWithZIO[ SqlExecutionService](
+      s => ZIO.attempt( s.getChunk( statement, n)))
+   */
 
   val layer: ZLayer[ Any, Nothing, SqlExecutionService] =
     ZLayer.succeed(
@@ -65,16 +79,14 @@ final case class SqlExecution( sqlWarehouse: SqlWarehouse) extends SqlExecutionS
     // ZIO.attempt( sqlWarehouse.refresh)
     //   .map( _.state == sql.State.RUNNING)
 
-  override def getWarehouseState =
-    for {
+  override def getWarehouseState = for {
       wh <- ZIO.attempt( sqlWarehouse.refresh)
-      state <- ZIO.attempt( wh.state)
-      _ <- ZIO.log( s"Warehouse state is ${state}")
-    } yield state
+      _ <- ZIO.log( s"Warehouse state is ${wh.state}")
+    } yield wh.state
 
   override def executeStatement( statement: String) = { 
-    // val pretty = statement.linesWithSeparators.toSeq.mkString("\t")
-    // ZIO.debug( s"Submitting statement:\n\t${pretty}")
+    val pretty = statement.linesWithSeparators.toSeq.mkString("\t")
+    ZIO.debug( s"Submitting statement:\n\t${pretty}")
     ZIO.attempt( sqlWarehouse.execute( statement))
   }
 
@@ -84,4 +96,11 @@ final case class SqlExecution( sqlWarehouse: SqlWarehouse) extends SqlExecutionS
       _ <- ZIO.log( s"Statement execution state is ${state}")
     } yield state
 
+  /*
+  override def getChunkCount( sqlStatment: SqlStatement) =
+    ZIO.attempt( sqlStatment.chunkCount)
+
+  override def getChunk( sqlStatment: SqlStatement, n: Long) =
+    ZIO.attempt( sqlStatment.chunk( n))
+   */
 }

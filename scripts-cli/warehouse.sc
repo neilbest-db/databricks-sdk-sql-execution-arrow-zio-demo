@@ -36,6 +36,7 @@ case class SqlWarehouse(
       .setSchema( "access")
       .setDisposition( sql.Disposition.EXTERNAL_LINKS)
       .setFormat( sql.Format.ARROW_STREAM)
+      .setWaitTimeout( "0s")
       .setStatement( statement)
 
   def response( request: sql.ExecuteStatementRequest): sql.StatementResponse =
@@ -90,11 +91,11 @@ case class SqlStatement(
   def refresh: SqlStatement =
     SqlStatement(
       request,
-      warehouse.client.it.statementExecution
+      warehouse.client.it
+        .statementExecution
         .getStatement(
-          new sql.GetStatementRequest().setStatementId( id)),
-        // .getStatus
-        // .getState
+          new sql.GetStatementRequest()
+            .setStatementId( id)),
       warehouse.refresh)
 
   def links: Iterable[ sql.ExternalLink] =
@@ -110,6 +111,16 @@ case class SqlStatement(
   def result: SqlStatementResult =
     SqlStatementResult( links, schema)
 
+  def chunkCount: Long =
+    response.getManifest.getTotalChunkCount
+
+  def chunk( n: Long): sql.ResultData =
+    warehouse.client.it.statementExecution
+      .getStatementResultChunkN(
+        new sql.GetStatementResultChunkNRequest()
+          .setStatementId( id)
+          .setChunkIndex( n))
+ 
 }
 
 case class SqlStatementResult(
