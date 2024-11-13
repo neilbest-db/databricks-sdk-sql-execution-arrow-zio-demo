@@ -45,6 +45,8 @@ object SqlExecutionApp extends ZIOSparkAppDefault {
       |WHERE event_date = '2024-11-01'
       |;""".stripMargin
 
+  val storageTarget = os.pwd / "delta/df"
+
   val untilRunning =
     ( Schedule.spaced( 3.seconds).upTo( 3.minutes)
       *> Schedule.recurUntil( ( s: sql.State) => sql.State.RUNNING.equals( s)))
@@ -56,6 +58,10 @@ object SqlExecutionApp extends ZIOSparkAppDefault {
   val app = for {
 
     sqlExecutionService <- ZIO.service[ SqlExecutionService]
+
+    _ <- ZIO.when( os.exists( storageTarget))(
+      ZIO.log( s"Clearing storage target ${storageTarget}")
+        *> ZIO.attempt( os.remove.all( storageTarget)))
 
     // _ <- ZIO.log( "Starting warehouse . . .")
 
@@ -112,14 +118,16 @@ object SqlExecutionApp extends ZIOSparkAppDefault {
     // _ <- ZIO.log( s"Row count: ${df.count}")
 
     _ <- fromSpark { spark =>
-      df.write
+      df.write.format("delta")
         .mode("append")
-        .format("delta")
-        .save( "./delta/df")
+        .save( storageTarget.toString)
     }
 
     records <- fromSpark { spark =>
-      spark.read.format( "delta").load("./delta/df").count }
+      spark.read.format( "delta")
+        .load( storageTarget.toString)
+        .count
+    }
 
     _ <- ZIO.log( s"Row count: ${records}")
 

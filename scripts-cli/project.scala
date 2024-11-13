@@ -7,6 +7,9 @@
 // HTTP client
 //> using dep com.lihaoyi::requests:0.9.0
 
+// OS-Lib
+//> using dep com.lihaoyi::os-lib:0.11.3
+
 // logging
 //> using dep com.outr::scribe:3.15.2
 //> using dep com.outr::scribe-slf4j2:3.15.2
