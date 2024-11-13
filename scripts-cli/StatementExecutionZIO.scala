@@ -4,6 +4,7 @@ import com.databricks.sdk
 // import com.databricks.sdk.core.DatabricksException
 import com.databricks.sdk.service.sql
 
+import org.apache.log4j.{Level, Logger}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.{
   PublicArrowConverters => ArrowConverters }
@@ -124,22 +125,43 @@ object SqlExecutionApp extends ZIOSparkAppDefault {
 
   } yield ()
 
-  private val spark =
-    SparkSession.builder
-      .master( localAllNodes)
-      .appName("arrow")
-      .configs( Map(
-        "spark.jars.packages" ->
-          "io.delta:delta-core_2.12:2.4.0",
-        "spark.sql.extensions"->
-          "io.delta.sql.DeltaSparkSessionExtension",
-        "spark.sql.catalog.spark_catalog" ->
-          "org.apache.spark.sql.delta.catalog.DeltaCatalog"))
+  private val spark: ZLayer[Any, Throwable, SparkSession] =
+    ZLayer.scoped {
+      val disableSparkLogging: UIO[Unit] =
+        ZIO.succeed(
+          Logger.getLogger("org.apache.spark").setLevel(Level.ERROR))
+
+      val builder =
+        SparkSession.builder
+          .master( localAllNodes)
+          .appName("arrow")
+          .configs( Map(
+            "spark.jars.packages" ->
+              "io.delta:delta-core_2.12:2.4.0",
+            "spark.sql.extensions"->
+              "io.delta.sql.DeltaSparkSessionExtension",
+            "spark.sql.catalog.spark_catalog" ->
+              "org.apache.spark.sql.delta.catalog.DeltaCatalog"))
+
+      val build: ZIO[Scope, Throwable, SparkSession] =
+        builder.getOrCreate.withFinalizer { ss =>
+          ZIO.logInfo("Closing Spark Session ...") *>
+            ss.close.tapError(_ => ZIO.logError("Failed to close the Spark Session.")).orDie
+        }
+
+      ZIO.logInfo("Opening Spark Session...") *> disableSparkLogging *> build
+    }
+
+  scribe.Logger("org.apache.spark")
+    .clearHandlers()
+    .clearModifiers()
+    .withHandler( minimumLevel = Some(scribe.Level.Error))
+    .replace()
 
   def run = app
     .provide(
       SqlExecutionService.layer,
-      spark.asLayer //,
+      spark //,
       // ZLayer.Debug.tree
     )
 
