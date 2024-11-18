@@ -1,23 +1,17 @@
 package org.apache.spark.sql
 
-// import $ivy.`org.apache.spark::spark-sql:3.4.0`
+import org.apache.spark.api.java.JavaRDD
 
-// import org.apache.spark.sql.{
-//   DataFrame, Dataset, SparkSession
-// }
-
-// import org.apache.spark.sql.execution.arrow.ArrowConverters.toDataFrame
 import org.apache.spark.sql.execution.arrow.{
   ArrowConverters => PrivateArrowConverters
 }
-
-// import org.apache.spark.sql.util.ArrowUtils
 
 
 object PublicArrowConverters {
 
   def toDataFrame(
-    arrowBatches: Iterator[Array[Byte]],
+    // arrowBatches: Iterator[ Array[ Byte]],  // Spark >= 3.4.0
+    arrowBatches: JavaRDD[ Array[ Byte]],  // Spark <= 3.3.4
     schemaString: String,
     session: SparkSession): DataFrame = {
 

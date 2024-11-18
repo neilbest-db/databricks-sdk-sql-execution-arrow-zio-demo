@@ -1,0 +1,1 @@
+set --global --export SCRIBE_MINIMUM_LEVEL warn

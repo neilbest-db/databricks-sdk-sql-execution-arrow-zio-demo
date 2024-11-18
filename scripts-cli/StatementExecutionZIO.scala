@@ -4,7 +4,14 @@ import com.databricks.sdk
 // import com.databricks.sdk.core.DatabricksException
 import com.databricks.sdk.service.sql
 
+// with Spark 3.1.1, 3.3.1(?)
 import org.apache.log4j.{Level, Logger}
+
+// with Spark 3.4.0 ?
+// import org.apache.log4j.Level
+// import org.slf4j.{Logger,LoggerFactory}
+
+import org.apache.spark.api.java.JavaRDD
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.{
   PublicArrowConverters => ArrowConverters }
@@ -17,27 +24,122 @@ import zio.spark.sql.{
 
 // import zio.logging.slf4j.bridge.Slf4jBridge
 import zio.logging.backend.SLF4J
+import zio.logging.{ LogFormat, LogFilter }
 
-import scala.jdk.CollectionConverters._
+import scala.collection.JavaConverters._
+
+// import scribe.Logging
+
 
 import databricks._
 import warehouse._
 import execution._
 
 
-object SqlExecutionApp extends ZIOSparkAppDefault {
 
-   // show Databricks REST API calls
-   
+object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
+
+
+  /*
+   *  show Databricks REST API calls
   scribe.Logger("com.databricks.sdk")
     .clearHandlers()
     .clearModifiers()
     .withHandler( minimumLevel = Some(scribe.Level.Debug))
     .replace()
+   */
 
+  val logFormat =
+     SLF4J.logFormatDefault.filter(
+      LogFilter.logLevelByName(
+        LogLevel.Warning))
+    /*
+                     ,
+        "org.apache.spark" -> LogLevel.Warning,
+        "com.databricks.sdk" -> LogLevel.Debug,
+        "org.sparkproject.jetty" -> LogLevel.Error))
+   */
 
   override val bootstrap: ZLayer[ZIOAppArgs, Any, Any] =
-    Runtime.removeDefaultLoggers >>> SLF4J.slf4j
+    Runtime.removeDefaultLoggers >>> SLF4J.slf4j( logFormat)
+
+    // Runtime.removeDefaultLoggers >>> zio.logging.consoleLogger() >+> Slf4jBridge.init( logFilter)
+
+  private val spark: ZLayer[Any, Throwable, SparkSession] =
+    ZLayer.scoped {
+      ZIO.acquireRelease {
+
+        val builder =      // val spark =
+          SparkSession.builder
+            .master( localAllNodes)
+            .appName("arrow")
+            .configs( Map(
+              "spark.jars.packages" ->
+                "io.delta:delta-core_2.12:2.4.0",
+              "spark.sql.extensions"->
+                "io.delta.sql.DeltaSparkSessionExtension",
+              "spark.sql.catalog.spark_catalog" ->
+                "org.apache.spark.sql.delta.catalog.DeltaCatalog"))
+
+        /*
+         *   no effect
+
+        scribe.Logger("org.apache.spark")
+          .clearHandlers()
+          .clearModifiers()
+          .withHandler( minimumLevel = Some(scribe.Level.Error))
+          .replace()
+
+         */
+
+
+        /*
+         *   no effect
+
+        val disableSparkLogging: UIO[Unit] =
+          ZIO.succeed(
+          // Logger.getLogger("org.apache.spark").setLevel(Level.OFF))
+          Logger.getRootLogger().setLevel(Level.WARN))
+
+
+        for {
+          _ <- ZIO.logInfo("Opening Spark Session...")
+          spark <- builder.getOrCreate
+          _ <- ZIO.succeed( spark.sparkContext.underlying.setLogLevel( "WARN"))
+          _ <- disableSparkLogging
+        } yield spark
+
+         */
+
+        builder.getOrCreate
+
+      } {
+
+        ss =>
+        ( ZIO.logInfo("Closing Spark Session ...")
+          *> ss.close.tapError(
+            _ => ZIO.logError("Failed to close the Spark Session."))
+          .orDie)
+
+      }
+
+    }
+
+  /*
+   *  no effect
+
+  scribe.Logger("org.apache.spark")
+    .clearHandlers()
+    .clearModifiers()
+    .withHandler( minimumLevel = Some(scribe.Level.Error))
+    .replace()
+
+  scribe.Logger("org.apache.spark.storage.BlockManagerInfo")
+    .clearHandlers()
+    .clearModifiers()
+    .withHandler( minimumLevel = Some(scribe.Level.Error))
+    .replace()
+   */
 
   val query =
     """SELECT *
@@ -58,6 +160,12 @@ object SqlExecutionApp extends ZIOSparkAppDefault {
   val app = for {
 
     sqlExecutionService <- ZIO.service[ SqlExecutionService]
+
+    // sparkSession <- ZIO.service[ SparkSession]
+
+    // _ <- sparkSession.sparkContext.setLogLevel( "WARN")
+
+    // _ <- fromSpark { _.sparkContext.setLogLevel( "WARN") }
 
     _ <- ZIO.when( os.exists( storageTarget))(
       ZIO.log( s"Clearing storage target ${storageTarget}")
@@ -92,6 +200,7 @@ object SqlExecutionApp extends ZIOSparkAppDefault {
 
     // links <- ZIO.succeed( executed.links.map( _.getExternalLink))
 
+    // TODO: throws requests.RequestFailedException ("403 . . . expired")
     streams <- ZIO.attempt(
       links.flatten.map( _.getExternalLink).map( link => requests.get.stream( link)))
 
@@ -108,8 +217,13 @@ object SqlExecutionApp extends ZIOSparkAppDefault {
       } yield batch)
 
     df <- fromSpark { spark =>
+
+      val javaRDD: JavaRDD[ Array[ Byte]] =
+        spark.sparkContext.parallelize( batches).toJavaRDD
+
       ArrowConverters.toDataFrame(
-        batches.iterator,
+        // batches.iterator,
+        javaRDD,
         succeededExecution.schema.json,
         spark)
     }
@@ -131,56 +245,43 @@ object SqlExecutionApp extends ZIOSparkAppDefault {
 
     _ <- ZIO.log( s"Row count: ${records}")
 
+    /*
+     * no effect (only for `spark-shell` & `spark-submit`?)
+
+     sparkConfDir <- System.env( "SPARK_CONF_DIR")
+
+    _ <- ZIO.log( s"SPARK_CONF_DIR is '${sparkConfDir}'")
+     */
+
+
   } yield ()
 
-  private val spark: ZLayer[Any, Throwable, SparkSession] =
-    ZLayer.scoped {
-      val disableSparkLogging: UIO[Unit] =
-        ZIO.succeed(
-          Logger.getLogger("org.apache.spark").setLevel(Level.ERROR))
 
-      val builder =
-        SparkSession.builder
-          .master( localAllNodes)
-          .appName("arrow")
-          .configs( Map(
-            "spark.jars.packages" ->
-              "io.delta:delta-core_2.12:2.4.0",
-            "spark.sql.extensions"->
-              "io.delta.sql.DeltaSparkSessionExtension",
-            "spark.sql.catalog.spark_catalog" ->
-              "org.apache.spark.sql.delta.catalog.DeltaCatalog"))
+  // TODO: filter Spark logs <= INFO at runtime so that this app can
+  // emit at INFO level
 
-      val build: ZIO[Scope, Throwable, SparkSession] =
-        builder.getOrCreate.withFinalizer { ss =>
-          ZIO.logInfo("Closing Spark Session ...") *>
-            ss.close.tapError(_ => ZIO.logError("Failed to close the Spark Session.")).orDie
-        }
-
-      ZIO.logInfo("Opening Spark Session...") *> disableSparkLogging *> build
-    }
-
-  scribe.Logger("org.apache.spark")
-    .clearHandlers()
-    .clearModifiers()
-    .withHandler( minimumLevel = Some(scribe.Level.Error))
-    .replace()
-
-  def run = app
+  def run = ZIO.logLevel( LogLevel.Warning) {
+    app
     .provide(
       SqlExecutionService.layer,
       spark //,
       // ZLayer.Debug.tree
     )
+  }
+
+  val loggerNames = scribe.Logger.loggersByName.keys
+
+  scribe.warn( s"Logger names: ${loggerNames}")
+
+
 
 }
 
 
 
 
-// throws requests.RequestFailedException ("403 . . . expired")
 
 
 
 
-// lazy val df = ArrowConverters.toDataFrame( iabs.next, schema, spark)
+
