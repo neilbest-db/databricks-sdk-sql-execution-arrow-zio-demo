@@ -4,10 +4,10 @@ import com.databricks.sdk
 // import com.databricks.sdk.core.DatabricksException
 import com.databricks.sdk.service.sql
 
-// with Spark 3.1.1, 3.3.1(?)
+// with Spark 3.1.1, 3.3.1(?) (Log4J)
 import org.apache.log4j.{Level, Logger}
 
-// with Spark 3.4.0 ?
+// with Spark 3.4.0 ? (SLF4J)
 // import org.apache.log4j.Level
 // import org.slf4j.{Logger,LoggerFactory}
 
@@ -42,6 +42,7 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
 
   /*
    *  show Databricks REST API calls
+
   scribe.Logger("com.databricks.sdk")
     .clearHandlers()
     .clearModifiers()
@@ -49,27 +50,63 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
     .replace()
    */
 
+  /*
+   *  make Spark be quiet!
+   *  (no effect unless applied to the `root` logger)
+   */
+
+  scribe.Logger.root
+    .clearHandlers()
+    .clearModifiers()
+    .withHandler( minimumLevel = Some( scribe.Level.Warn))
+    .replace()
+
+  /*
+  scribe.Logger("org") // .root
+    .clearHandlers()
+    .clearModifiers()
+    .withHandler( minimumLevel = Some( scribe.Level.Warn))
+    .replace()
+
+  scribe.Logger("org.apache.spark")
+    .clearHandlers()
+    .clearModifiers()
+    .withHandler( minimumLevel = Some( scribe.Level.Warn))
+    .replace()
+
+  scribe.Logger("org.sparkproject.jetty")
+    .clearHandlers()
+    .clearModifiers()
+    .withHandler( minimumLevel = Some( scribe.Level.Error))
+    .replace()
+
+  scribe.Logger("org.apache.spark.storage.BlockManagerInfo")
+    .clearHandlers()
+    .clearModifiers()
+    .withHandler( minimumLevel = Some(scribe.Level.Error))
+    .replace()
+   */
+
+  // no effect under Scribe
   val logFormat =
      SLF4J.logFormatDefault.filter(
       LogFilter.logLevelByName(
-        LogLevel.Warning))
-    /*
-                     ,
+        LogLevel.Warning,
         "org.apache.spark" -> LogLevel.Warning,
-        "com.databricks.sdk" -> LogLevel.Debug,
+        "com.databricks.sdk" -> LogLevel.Debug,      // no effect
         "org.sparkproject.jetty" -> LogLevel.Error))
-   */
 
   override val bootstrap: ZLayer[ZIOAppArgs, Any, Any] =
-    Runtime.removeDefaultLoggers >>> SLF4J.slf4j( logFormat)
+    Runtime.removeDefaultLoggers >>> SLF4J.slf4j // ( logFormat)
 
     // Runtime.removeDefaultLoggers >>> zio.logging.consoleLogger() >+> Slf4jBridge.init( logFilter)
 
   private val spark: ZLayer[Any, Throwable, SparkSession] =
     ZLayer.scoped {
+
       ZIO.acquireRelease {
 
-        val builder =      // val spark =
+        val builder =
           SparkSession.builder
             .master( localAllNodes)
             .appName("arrow")
@@ -80,18 +117,6 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
                 "io.delta.sql.DeltaSparkSessionExtension",
               "spark.sql.catalog.spark_catalog" ->
                 "org.apache.spark.sql.delta.catalog.DeltaCatalog"))
-
-        /*
-         *   no effect
-
-        scribe.Logger("org.apache.spark")
-          .clearHandlers()
-          .clearModifiers()
-          .withHandler( minimumLevel = Some(scribe.Level.Error))
-          .replace()
-
-         */
-
 
         /*
          *   no effect
@@ -125,22 +150,6 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
 
     }
 
-  /*
-   *  no effect
-
-  scribe.Logger("org.apache.spark")
-    .clearHandlers()
-    .clearModifiers()
-    .withHandler( minimumLevel = Some(scribe.Level.Error))
-    .replace()
-
-  scribe.Logger("org.apache.spark.storage.BlockManagerInfo")
-    .clearHandlers()
-    .clearModifiers()
-    .withHandler( minimumLevel = Some(scribe.Level.Error))
-    .replace()
-   */
-
   val query =
     """SELECT *
       |FROM audit
@@ -161,17 +170,9 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
 
     sqlExecutionService <- ZIO.service[ SqlExecutionService]
 
-    // sparkSession <- ZIO.service[ SparkSession]
-
-    // _ <- sparkSession.sparkContext.setLogLevel( "WARN")
-
-    // _ <- fromSpark { _.sparkContext.setLogLevel( "WARN") }
-
     _ <- ZIO.when( os.exists( storageTarget))(
       ZIO.log( s"Clearing storage target ${storageTarget}")
         *> ZIO.attempt( os.remove.all( storageTarget)))
-
-    // _ <- ZIO.log( "Starting warehouse . . .")
 
     warehouseState <- sqlExecutionService.getWarehouseState.repeat( untilRunning)
 
@@ -182,9 +183,6 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
 
     sqlExecution <-  sqlExecutionService.executeStatement( query)
 
-    // _ <- ZIO.log( "Executing statement . . .")
-
-
     executionState <- sqlExecutionService.getState( sqlExecution).repeat( untilSucceeded)
 
     _ <- ZIO.unless(
@@ -194,11 +192,11 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
 
     succeededExecution = sqlExecution.refresh
 
-    links <- ZIO.loop(0)( _ < 20, _ + 1)(
-      // _ < executed.chunkCount, _ + 1)(
-      n => ZIO.attempt( succeededExecution.chunk( n).getExternalLinks.asScala))
-
-    // links <- ZIO.succeed( executed.links.map( _.getExternalLink))
+    links <- ZIO.loop(0)(
+      _ < 20, _ + 1)(
+      // _ < succeededExecution.chunkCount, _ + 1)(
+      n => ZIO.attempt(
+        succeededExecution.chunk( n).getExternalLinks.asScala))
 
     // TODO: throws requests.RequestFailedException ("403 . . . expired")
     streams <- ZIO.attempt(
@@ -222,14 +220,11 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
         spark.sparkContext.parallelize( batches).toJavaRDD
 
       ArrowConverters.toDataFrame(
-        // batches.iterator,
+        // batches.iterator,  // Spark > 3.3.2 (?)
         javaRDD,
         succeededExecution.schema.json,
         spark)
     }
-
-    // _ <- Console.printLine( s"Row count: ${df.count}")
-    // _ <- ZIO.log( s"Row count: ${df.count}")
 
     _ <- fromSpark { spark =>
       df.write.format("delta")
@@ -245,20 +240,21 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
 
     _ <- ZIO.log( s"Row count: ${records}")
 
-    /*
-     * no effect (only for `spark-shell` & `spark-submit`?)
-
-     sparkConfDir <- System.env( "SPARK_CONF_DIR")
-
-    _ <- ZIO.log( s"SPARK_CONF_DIR is '${sparkConfDir}'")
-     */
-
 
   } yield ()
 
 
-  // TODO: filter Spark logs <= INFO at runtime so that this app can
-  // emit at INFO level
+  /*
+   * TODO: filter Spark logs <= INFO at runtime
+   *
+   * . . .  so that this ZIO app can emit at INFO level.
+   *
+   * `SPARK_CONF_DIR` had no effect; maybe it's only for `spark-shell`
+   * & `spark-submit`?
+   *
+   */
+
+
 
   def run = ZIO.logLevel( LogLevel.Warning) {
     app
@@ -268,6 +264,11 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
       // ZLayer.Debug.tree
     )
   }
+
+  /*
+   * what happens at runtime that Scribe does not have/use the loggers
+   * defined here (at compile-time?)
+   */
 
   val loggerNames = scribe.Logger.loggersByName.keys
 
