@@ -48,6 +48,7 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
     .clearModifiers()
     .withHandler( minimumLevel = Some(scribe.Level.Debug))
     .replace()
+
    */
 
   /*
@@ -61,43 +62,8 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
     .withHandler( minimumLevel = Some( scribe.Level.Warn))
     .replace()
 
-  /*
-  scribe.Logger("org") // .root
-    .clearHandlers()
-    .clearModifiers()
-    .withHandler( minimumLevel = Some( scribe.Level.Warn))
-    .replace()
-
-  scribe.Logger("org.apache.spark")
-    .clearHandlers()
-    .clearModifiers()
-    .withHandler( minimumLevel = Some( scribe.Level.Warn))
-    .replace()
-
-  scribe.Logger("org.sparkproject.jetty")
-    .clearHandlers()
-    .clearModifiers()
-    .withHandler( minimumLevel = Some( scribe.Level.Error))
-    .replace()
-
-  scribe.Logger("org.apache.spark.storage.BlockManagerInfo")
-    .clearHandlers()
-    .clearModifiers()
-    .withHandler( minimumLevel = Some(scribe.Level.Error))
-    .replace()
-   */
-
-  // no effect under Scribe
-  val logFormat =
-     SLF4J.logFormatDefault.filter(
-      LogFilter.logLevelByName(
-        LogLevel.Warning,
-        "org.apache.spark" -> LogLevel.Warning,
-        "com.databricks.sdk" -> LogLevel.Debug,      // no effect
-        "org.sparkproject.jetty" -> LogLevel.Error))
-
   override val bootstrap: ZLayer[ZIOAppArgs, Any, Any] =
-    Runtime.removeDefaultLoggers >>> SLF4J.slf4j // ( logFormat)
+    Runtime.removeDefaultLoggers >>> SLF4J.slf4j
 
     // Runtime.removeDefaultLoggers >>> zio.logging.consoleLogger() >+> Slf4jBridge.init( logFilter)
 
@@ -117,24 +83,6 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
                 "io.delta.sql.DeltaSparkSessionExtension",
               "spark.sql.catalog.spark_catalog" ->
                 "org.apache.spark.sql.delta.catalog.DeltaCatalog"))
-
-        /*
-         *   no effect
-
-        val disableSparkLogging: UIO[Unit] =
-          ZIO.succeed(
-          // Logger.getLogger("org.apache.spark").setLevel(Level.OFF))
-          Logger.getRootLogger().setLevel(Level.WARN))
-
-
-        for {
-          _ <- ZIO.logInfo("Opening Spark Session...")
-          spark <- builder.getOrCreate
-          _ <- ZIO.succeed( spark.sparkContext.underlying.setLogLevel( "WARN"))
-          _ <- disableSparkLogging
-        } yield spark
-
-         */
 
         builder.getOrCreate
 
@@ -254,8 +202,6 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
    *
    */
 
-
-
   def run = ZIO.logLevel( LogLevel.Warning) {
     app
     .provide(
@@ -264,16 +210,6 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
       // ZLayer.Debug.tree
     )
   }
-
-  /*
-   * what happens at runtime that Scribe does not have/use the loggers
-   * defined here (at compile-time?)
-   */
-
-  val loggerNames = scribe.Logger.loggersByName.keys
-
-  scribe.warn( s"Logger names: ${loggerNames}")
-
 
 
 }
