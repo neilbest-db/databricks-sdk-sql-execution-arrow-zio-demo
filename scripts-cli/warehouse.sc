@@ -5,6 +5,7 @@ import com.databricks.sdk.service.sql
 import org.apache.spark.sql.types.StructType
 import scala.collection.JavaConverters._
 import zio._
+import zio.stream.ZStream
 
 import databricks._
 
@@ -98,9 +99,24 @@ case class SqlStatement(
             .setStatementId( id)),
       warehouse.refresh)
 
+  /*
+   * only returns the first chunk; initial development
+   *
+
   def links: Iterable[ sql.ExternalLink] =
     response.getResult.getExternalLinks.asScala
-  //.toParArray //.iterator.asScala
+
+   */
+
+  def links: ZStream[Any, Throwable, sql.ExternalLink] =
+    ZStream.unfold( 0) {
+      // case i if i == chunkCount => None
+      case i if i == math.min( 12, chunkCount) => None
+      case i => Some( getChunk( i) -> (i + 1))
+    } mapConcat {
+      ( chunk: sql.ResultData) => chunk.getExternalLinks.asScala
+    }
+
 
   def schema: StructType =
     StructType.fromDDL(
@@ -108,13 +124,13 @@ case class SqlStatement(
         .map( ci => s"${ci.getName} ${ci.getTypeText}")
         .mkString( ",\n"))
 
-  def result: SqlStatementResult =
-    SqlStatementResult( links, schema)
+  // def result: SqlStatementResult =
+  //   SqlStatementResult( links, schema)
 
-  def chunkCount: Long =
+  lazy val chunkCount: Long =
     response.getManifest.getTotalChunkCount
 
-  def chunk( n: Long): sql.ResultData =
+  def getChunk( n: Long): sql.ResultData =
     warehouse.client.it.statementExecution
       .getStatementResultChunkN(
         new sql.GetStatementResultChunkNRequest()
@@ -123,6 +139,7 @@ case class SqlStatement(
  
 }
 
+/*
 case class SqlStatementResult(
 
   links: Iterable[ sql.ExternalLink],
@@ -130,3 +147,4 @@ case class SqlStatementResult(
   schema: StructType
 
 )
+ */

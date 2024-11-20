@@ -14,6 +14,7 @@ import org.apache.log4j.{Level, Logger}
 import org.apache.spark.api.java.JavaRDD
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.{
+  DataFrame,
   PublicArrowConverters => ArrowConverters }
 
 import zio._
@@ -22,6 +23,8 @@ import zio.spark.parameter.localAllNodes
 import zio.spark.sql.{
   fromSpark, SparkSession}
 
+import zio.stream.{
+  ZStream, ZPipeline, ZSink}
 // import zio.logging.slf4j.bridge.Slf4jBridge
 import zio.logging.backend.SLF4J
 import zio.logging.{ LogFormat, LogFilter }
@@ -36,9 +39,9 @@ import warehouse._
 import execution._
 
 
-
 object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
 
+  type ArrowBatch = Array[ Byte]
 
   /*
    *  show Databricks REST API calls
@@ -114,7 +117,10 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
     ( Schedule.spaced( 20.seconds).upTo( 10.minutes)
       *> Schedule.recurUntil( ( s: sql.StatementState) => s.equals( sql.StatementState.SUCCEEDED)))
 
-  val app = for {
+
+  val successfulExecution: ZIO[ SqlExecutionService, Throwable, SqlStatement] =
+    for {
+  // val sqlChunkStream = for {
 
     sqlExecutionService <- ZIO.service[ SqlExecutionService]
 
@@ -138,18 +144,39 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
         ZIO.dieMessage(
           s"Statement execution timed out in state ${executionState}."))
 
-    succeededExecution = sqlExecution.refresh
+    // succeeded = sqlExecution.refresh
 
+    /*
     links <- ZIO.loop(0)(
       _ < 20, _ + 1)(
       // _ < succeededExecution.chunkCount, _ + 1)(
       n => ZIO.attempt(
-        succeededExecution.chunk( n).getExternalLinks.asScala))
+     succeededExecution.chunk( n).getExternalLinks.asScala))
+     */
 
-    // TODO: throws requests.RequestFailedException ("403 . . . expired")
-    streams <- ZIO.attempt(
-      links.flatten.map( _.getExternalLink).map( link => requests.get.stream( link)))
+    /*
+    _ <- succeeded.links.run(
+      httpStreams
+        >>> arrowBatches
+        >>> dataFrame( succeeded.schema)
+        >>> appendToDelta
+        >>> totalRecordsAppended)
+     */
 
+  } yield sqlExecution.refresh  // succeeded
+
+
+  val httpStreams: ZPipeline[ Any, Throwable, sql.ExternalLink, geny.Readable] =
+    ZPipeline.map( link => requests.get.stream( link.getExternalLink))
+  // TODO: throws requests.RequestFailedException ("403 . . . expired")
+
+  val arrowBatches: ZPipeline[ Any, Throwable, geny.Readable, Iterator[ ArrowBatch]] =
+    ZPipeline.map(
+      (stream: geny.Readable) => ArrowConverters.getBatchesFromStream(
+        stream.readBytesThrough(
+          (is: java.io.InputStream) => java.nio.channels.Channels.newChannel( is))))
+
+    /*
     batches <- ZIO.attempt(
       for {
 
@@ -160,8 +187,33 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
             (is: java.io.InputStream)
               => java.nio.channels.Channels.newChannel( is)))
 
-      } yield batch)
+     } yield batch)
+     */
 
+  /*
+  def dataFrame( schema: StructType): ZPipeline[ Any, Throwable, Iterator[ ArrowBatch], DataFrame] =
+    ZPipeline.map( ( batches: Iterator[ ArrowBatch]) => fromSpark {
+      spark => ArrowConverters.toDataFrame(
+        // batches.iterator,  // Spark > 3.3.2 (?)
+        spark.sparkContext.parallelize( batches).toJavaRDD,
+        schema.json,
+        spark)})
+
+   */
+
+  def dataFrame( schema: StructType): ZPipeline[ SparkSession, Throwable, Iterator[ ArrowBatch], DataFrame] =
+    ZPipeline.mapZIOParUnordered(4) {
+      ( batches: Iterator[ ArrowBatch]) => fromSpark {
+        spark => ArrowConverters.toDataFrame(
+          // batches.iterator,  // Spark > 3.3.2 (?)
+          spark.sparkContext.parallelize( batches.toSeq).toJavaRDD,
+          schema.json,
+          spark)
+      }
+    }
+  
+
+  /*
     df <- fromSpark { spark =>
 
       val javaRDD: JavaRDD[ Array[ Byte]] =
@@ -172,12 +224,53 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
         javaRDD,
         succeededExecution.schema.json,
         spark)
-    }
+   }
+   */
 
-    _ <- fromSpark { spark =>
+  /*
+  val appendToDelta: ZSink[ SparkSession, Throwable, DataFrame, Nothing, Unit] =
+    ZSink.foreach( ( df: DataFrame) => {
+
+      // for { spark <- ZSink.service[ SparkSession]
+
       df.write.format("delta")
         .mode("append")
         .save( storageTarget.toString)
+      }
+   */
+
+  val appendToDelta: ZPipeline[ SparkSession, Throwable, DataFrame, Long] =
+    ZPipeline.map {
+      ( df: DataFrame) => {
+        df.write.format("delta")
+          .mode("append")
+          .save( storageTarget.toString)
+        df.count
+      }
+    }
+
+  val dataFrameCounts: ZSink[ Any, Throwable, Long, Nothing, Long] =
+    ZSink.sum[Long]
+
+      /*
+      records <- fromSpark { spark =>
+        spark.read.format( "delta")
+          .load( storageTarget.toString)
+          .count
+      }
+
+      _ <- ZIO.log( s"Row count: ${records}")
+
+       } yield records
+
+       */
+
+  /*
+
+      _ <- fromSpark { spark =>
+        df.write.format("delta")
+          .mode("append")
+          .save( storageTarget.toString)
     }
 
     records <- fromSpark { spark =>
@@ -186,11 +279,14 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
         .count
     }
 
-    _ <- ZIO.log( s"Row count: ${records}")
+   _ <- ZIO.log( s"Row count: ${records}")
+
+   */
 
 
-  } yield ()
 
+
+  // } yield ()
 
   /*
    * TODO: filter Spark logs <= INFO at runtime
@@ -202,14 +298,37 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
    *
    */
 
-  def run = ZIO.logLevel( LogLevel.Warning) {
-    app
-    .provide(
-      SqlExecutionService.layer,
-      spark //,
-      // ZLayer.Debug.tree
-    )
-  }
+  /*
+  val arrowLinks: ZStream[ SqlExecutionService, Throwable, sql.ExternalLink] =
+    ZStream.fromIteratorZIO( successfulExecution.map( _.links.iterator))
+   */
+
+  val totalRecordsAppended = for {
+
+    result <- successfulExecution
+
+    // schema <- successfulExecution.tap( _.schema)
+
+    n <- result.links.run(
+      httpStreams
+        >>> arrowBatches
+        >>> dataFrame( result.schema) //successfulExecution.tap( _.schema)
+        >>> appendToDelta
+        >>> dataFrameCounts)
+
+    _ <- ZIO.log( s"Total records appended: $n")
+
+  } yield ()
+
+  def run =
+    ZIO.logLevel( LogLevel.Warning) {
+      totalRecordsAppended
+        .provide(
+          SqlExecutionService.layer,
+          spark //,
+                // ZLayer.Debug.tree
+        )
+    }
 
 
 }
