@@ -65,6 +65,16 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
     .withHandler( minimumLevel = Some( scribe.Level.Warn))
     .replace()
 
+  /*
+   * TODO: filter Spark logs <= INFO at runtime
+   *
+   * . . .  so that this ZIO app can emit at INFO level.
+   *
+   * `SPARK_CONF_DIR` had no effect; maybe it's only for `spark-shell`
+   * & `spark-submit`?
+   *
+   */
+
   override val bootstrap: ZLayer[ZIOAppArgs, Any, Any] =
     Runtime.removeDefaultLoggers >>> SLF4J.slf4j
 
@@ -120,7 +130,6 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
 
   val successfulExecution: ZIO[ SqlExecutionService, Throwable, SqlStatement] =
     for {
-  // val sqlChunkStream = for {
 
     sqlExecutionService <- ZIO.service[ SqlExecutionService]
 
@@ -144,26 +153,7 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
         ZIO.dieMessage(
           s"Statement execution timed out in state ${executionState}."))
 
-    // succeeded = sqlExecution.refresh
-
-    /*
-    links <- ZIO.loop(0)(
-      _ < 20, _ + 1)(
-      // _ < succeededExecution.chunkCount, _ + 1)(
-      n => ZIO.attempt(
-     succeededExecution.chunk( n).getExternalLinks.asScala))
-     */
-
-    /*
-    _ <- succeeded.links.run(
-      httpStreams
-        >>> arrowBatches
-        >>> dataFrame( succeeded.schema)
-        >>> appendToDelta
-        >>> totalRecordsAppended)
-     */
-
-  } yield sqlExecution.refresh  // succeeded
+  } yield sqlExecution.refresh
 
 
   val httpStreams: ZPipeline[ Any, Throwable, sql.ExternalLink, geny.Readable] =
@@ -176,30 +166,6 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
         stream.readBytesThrough(
           (is: java.io.InputStream) => java.nio.channels.Channels.newChannel( is))))
 
-    /*
-    batches <- ZIO.attempt(
-      for {
-
-        stream <- streams
-
-        batch <- ArrowConverters.getBatchesFromStream(
-          stream.readBytesThrough(
-            (is: java.io.InputStream)
-              => java.nio.channels.Channels.newChannel( is)))
-
-     } yield batch)
-     */
-
-  /*
-  def dataFrame( schema: StructType): ZPipeline[ Any, Throwable, Iterator[ ArrowBatch], DataFrame] =
-    ZPipeline.map( ( batches: Iterator[ ArrowBatch]) => fromSpark {
-      spark => ArrowConverters.toDataFrame(
-        // batches.iterator,  // Spark > 3.3.2 (?)
-        spark.sparkContext.parallelize( batches).toJavaRDD,
-        schema.json,
-        spark)})
-
-   */
 
   def dataFrame( schema: StructType): ZPipeline[ SparkSession, Throwable, Iterator[ ArrowBatch], DataFrame] =
     ZPipeline.mapZIOParUnordered(4) {
@@ -212,32 +178,6 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
       }
     }
   
-
-  /*
-    df <- fromSpark { spark =>
-
-      val javaRDD: JavaRDD[ Array[ Byte]] =
-        spark.sparkContext.parallelize( batches).toJavaRDD
-
-      ArrowConverters.toDataFrame(
-        // batches.iterator,  // Spark > 3.3.2 (?)
-        javaRDD,
-        succeededExecution.schema.json,
-        spark)
-   }
-   */
-
-  /*
-  val appendToDelta: ZSink[ SparkSession, Throwable, DataFrame, Nothing, Unit] =
-    ZSink.foreach( ( df: DataFrame) => {
-
-      // for { spark <- ZSink.service[ SparkSession]
-
-      df.write.format("delta")
-        .mode("append")
-        .save( storageTarget.toString)
-      }
-   */
 
   val appendToDelta: ZPipeline[ SparkSession, Throwable, DataFrame, Long] =
     ZPipeline.map {
@@ -252,62 +192,10 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
   val dataFrameCounts: ZSink[ Any, Throwable, Long, Nothing, Long] =
     ZSink.sum[Long]
 
-      /*
-      records <- fromSpark { spark =>
-        spark.read.format( "delta")
-          .load( storageTarget.toString)
-          .count
-      }
-
-      _ <- ZIO.log( s"Row count: ${records}")
-
-       } yield records
-
-       */
-
-  /*
-
-      _ <- fromSpark { spark =>
-        df.write.format("delta")
-          .mode("append")
-          .save( storageTarget.toString)
-    }
-
-    records <- fromSpark { spark =>
-      spark.read.format( "delta")
-        .load( storageTarget.toString)
-        .count
-    }
-
-   _ <- ZIO.log( s"Row count: ${records}")
-
-   */
-
-
-
-
-  // } yield ()
-
-  /*
-   * TODO: filter Spark logs <= INFO at runtime
-   *
-   * . . .  so that this ZIO app can emit at INFO level.
-   *
-   * `SPARK_CONF_DIR` had no effect; maybe it's only for `spark-shell`
-   * & `spark-submit`?
-   *
-   */
-
-  /*
-  val arrowLinks: ZStream[ SqlExecutionService, Throwable, sql.ExternalLink] =
-    ZStream.fromIteratorZIO( successfulExecution.map( _.links.iterator))
-   */
 
   val totalRecordsAppended = for {
 
     result <- successfulExecution
-
-    // schema <- successfulExecution.tap( _.schema)
 
     n <- result.links.run(
       httpStreams
