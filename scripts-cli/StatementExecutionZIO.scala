@@ -4,6 +4,8 @@ import com.databricks.sdk
 // import com.databricks.sdk.core.DatabricksException
 import com.databricks.sdk.service.sql
 
+import io.delta.tables.DeltaTable
+
 // with Spark 3.1.1, 3.3.1(?) (Log4J)
 import org.apache.log4j.{Level, Logger}
 
@@ -20,6 +22,7 @@ import org.apache.spark.sql.{
 import zio._
 import zio.spark.experimental.ZIOSparkAppDefault
 import zio.spark.parameter.localAllNodes
+import zio.spark.rdd.RDD
 import zio.spark.sql.{
   fromSpark, SparkSession}
 
@@ -115,6 +118,7 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
     """SELECT *
       |FROM audit
       |WHERE event_date = '2024-11-01'
+      |LIMIT 10000000
       |;""".stripMargin
 
   val storageTarget = os.pwd / "delta/df"
@@ -155,58 +159,86 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
 
   } yield sqlExecution.refresh
 
-
-  val httpStreams: ZPipeline[ Any, Throwable, sql.ExternalLink, geny.Readable] =
-    ZPipeline.map( link => requests.get.stream( link.getExternalLink))
-  // TODO: throws requests.RequestFailedException ("403 . . . expired")
-
-  val arrowBatches: ZPipeline[ Any, Throwable, geny.Readable, Iterator[ ArrowBatch]] =
-    ZPipeline.map(
-      (stream: geny.Readable) => ArrowConverters.getBatchesFromStream(
-        stream.readBytesThrough(
-          (is: java.io.InputStream) => java.nio.channels.Channels.newChannel( is))))
-
-
-  def dataFrame( schema: StructType): ZPipeline[ SparkSession, Throwable, Iterator[ ArrowBatch], DataFrame] =
-    ZPipeline.mapZIOParUnordered(4) {
-      ( batches: Iterator[ ArrowBatch]) => fromSpark {
-        spark => ArrowConverters.toDataFrame(
-          // batches.iterator,  // Spark > 3.3.2 (?)
-          spark.sparkContext.parallelize( batches.toSeq).toJavaRDD,
-          schema.json,
-          spark)
-      }
-    }
-  
-
-  val appendToDelta: ZPipeline[ SparkSession, Throwable, DataFrame, Long] =
-    ZPipeline.map {
-      ( df: DataFrame) => {
-        df.write.format("delta")
-          .mode("append")
-          .save( storageTarget.toString)
-        df.count
-      }
-    }
-
-  val dataFrameCounts: ZSink[ Any, Throwable, Long, Nothing, Long] =
-    ZSink.sum[Long]
-
-
   val totalRecordsAppended = for {
 
     result <- successfulExecution
 
+    spark <- ZIO.service[ SparkSession]
+
+    _  <- fromSpark { spark =>
+      DeltaTable
+        .create( spark)
+        .addColumns( result.schema)
+        .location( storageTarget.toString)
+        .execute
+    }
+
     n <- result.links.run(
       httpStreams
         >>> arrowBatches
-        >>> dataFrame( result.schema) //successfulExecution.tap( _.schema)
-        >>> appendToDelta
-        >>> dataFrameCounts)
+        >>> rdd // dataFrames( result.schema)
+        >>> appendToDelta( result.schema)
+        >>> countRows)
 
     _ <- ZIO.log( s"Total records appended: $n")
 
   } yield ()
+
+  /*
+  val progress: ZPipeline[ . . . ] =
+    ZPipeline.contramap
+        ZIO.logWarning( s"Processing chunk $i of $chunkCount")
+   */
+
+
+  val httpStreams: ZPipeline[ Any, Throwable, sql.ExternalLink, Task[geny.Readable]] =
+    ZPipeline.map( link => ZIO.attempt( requests.get.stream( link.getExternalLink)))
+  // TODO: throws requests.RequestFailedException ("403 . . . expired")
+
+
+  val arrowBatches: ZPipeline[ Any, Throwable, Task[ geny.Readable], Task[ Iterator[ ArrowBatch]]] =
+    ZPipeline.mapZIOParUnordered(12) {
+      task => for {
+        stream <- task
+        batches = ArrowConverters.getBatchesFromStream(
+          stream.readBytesThrough(
+            (is: java.io.InputStream)
+              => java.nio.channels.Channels.newChannel( is)))
+      } yield ZIO.attempt( batches)
+    }
+
+  val rdd: ZPipeline[ SparkSession, Throwable, Task[ Iterator[ ArrowBatch]], RDD[ ArrowBatch]] =
+    ZPipeline.mapZIOParUnordered(12) {
+      task => for {
+        spark <- ZIO.service[ SparkSession]
+        batches <- task
+        rdd = spark.sparkContext.makeRDD(
+          // batches.iterator,  // Spark > 3.3.2 (?)
+          batches.toSeq)
+      } yield rdd
+    }
+  
+
+  def appendToDelta( schema: StructType): ZPipeline[ SparkSession, Throwable, RDD[ ArrowBatch], Long] =
+    ZPipeline.mapZIOParUnordered(12) {
+      rdd => {
+        fromSpark { spark =>
+          val df = ArrowConverters.toDataFrame(
+            rdd.underlying.toJavaRDD,
+            schema.json,
+            spark )
+          df.write.format("delta").mode("append")
+            .save( storageTarget.toString)
+          df.count
+        }
+      }
+    }
+
+
+  val countRows: ZSink[ Any, Throwable, Long, Nothing, Long] =
+    ZSink.sum[Long]
+
+
 
   def run =
     ZIO.logLevel( LogLevel.Warning) {

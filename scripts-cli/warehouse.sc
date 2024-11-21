@@ -110,12 +110,12 @@ case class SqlStatement(
 
   def links: ZStream[Any, Throwable, sql.ExternalLink] =
     ZStream.unfold( 0) {
-      // case i if i == chunkCount => None
-      case i if i == math.min( 12, chunkCount) => None
-      case i => Some( getChunk( i) -> (i + 1))
+      // math.min( 12, chunkCount)
+      case i if i < chunkCount => Some( getChunk( i) -> (i + 1))
+      case _ => None
     } mapConcat {
       ( chunk: sql.ResultData) => chunk.getExternalLinks.asScala
-    }
+    } bufferUnbounded
 
 
   def schema: StructType =
