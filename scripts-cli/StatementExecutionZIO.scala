@@ -1,17 +1,9 @@
 
-
 import com.databricks.sdk
 // import com.databricks.sdk.core.DatabricksException
 import com.databricks.sdk.service.sql
 
 import io.delta.tables.DeltaTable
-
-// with Spark 3.1.1, 3.3.1(?) (Log4J)
-import org.apache.log4j.{Level, Logger}
-
-// with Spark 3.4.0 ? (SLF4J)
-// import org.apache.log4j.Level
-// import org.slf4j.{Logger,LoggerFactory}
 
 import org.apache.spark.api.java.JavaRDD
 import org.apache.spark.sql.types.StructType
@@ -28,9 +20,8 @@ import zio.spark.sql.{
 
 import zio.stream.{
   ZStream, ZPipeline, ZSink}
-// import zio.logging.slf4j.bridge.Slf4jBridge
+
 import zio.logging.backend.SLF4J
-import zio.logging.{ LogFormat, LogFilter }
 
 import scala.collection.JavaConverters._
 
@@ -42,46 +33,20 @@ import warehouse._
 import execution._
 
 
-object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
+object StatementExecutionZIO extends ZIOSparkAppDefault {
+    // with Logging {
 
   type ArrowBatch = Array[ Byte]
 
-  /*
-   *  show Databricks REST API calls
-
-  scribe.Logger("com.databricks.sdk")
-    .clearHandlers()
-    .clearModifiers()
-    .withHandler( minimumLevel = Some(scribe.Level.Debug))
-    .replace()
-
-   */
-
-  /*
-   *  make Spark be quiet!
-   *  (no effect unless applied to the `root` logger)
-   */
-
-  scribe.Logger.root
-    .clearHandlers()
-    .clearModifiers()
-    .withHandler( minimumLevel = Some( scribe.Level.Warn))
-    .replace()
-
-  /*
-   * TODO: filter Spark logs <= INFO at runtime
-   *
-   * . . .  so that this ZIO app can emit at INFO level.
-   *
-   * `SPARK_CONF_DIR` had no effect; maybe it's only for `spark-shell`
-   * & `spark-submit`?
-   *
-   */
+  scribe.Logger.minimumLevels(
+    // "com.databricks.sdk" -> scribe.Level.Debug,   // show Databricks REST API calls
+    "org.apache.hadoop" -> scribe.Level.Info,
+    "org.apache.spark" -> scribe.Level.Error,        // make Spark be quiet!
+    "org.apache.parquet" -> scribe.Level.Warn,
+    "org.sparkproject.jetty" -> scribe.Level.Warn)
 
   override val bootstrap: ZLayer[ZIOAppArgs, Any, Any] =
     Runtime.removeDefaultLoggers >>> SLF4J.slf4j
-
-    // Runtime.removeDefaultLoggers >>> zio.logging.consoleLogger() >+> Slf4jBridge.init( logFilter)
 
   private val spark: ZLayer[Any, Throwable, SparkSession] =
     ZLayer.scoped {
@@ -124,11 +89,11 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
   val storageTarget = os.pwd / "delta/df"
 
   val untilRunning =
-    ( Schedule.spaced( 3.seconds).upTo( 3.minutes)
+    ( Schedule.spaced( 3.seconds).upTo( 5.minutes)
       *> Schedule.recurUntil( ( s: sql.State) => sql.State.RUNNING.equals( s)))
 
   val untilSucceeded = 
-    ( Schedule.spaced( 20.seconds).upTo( 10.minutes)
+    ( Schedule.spaced( 3.seconds).upTo( 15.minutes)
       *> Schedule.recurUntil( ( s: sql.StatementState) => s.equals( sql.StatementState.SUCCEEDED)))
 
 
@@ -159,11 +124,12 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
 
   } yield sqlExecution.refresh
 
-  val totalRecordsAppended = for {
 
-    result <- successfulExecution
+  val totalRecordsAppended: ZIO[ SqlExecutionService & SparkSession, Throwable, Unit] =
+    for {
 
     spark <- ZIO.service[ SparkSession]
+      statement <- successfulExecution
 
     _  <- fromSpark { spark =>
       DeltaTable
@@ -173,27 +139,28 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
         .execute
     }
 
-    n <- result.links.run(
-      httpStreams
-        >>> arrowBatches
-        >>> rdd // dataFrames( result.schema)
-        >>> appendToDelta( result.schema)
-        >>> countRows)
+      n <- statement.results.run(
+        logProgress( statement.totalChunkCount)
+          >>> httpStreams
+          >>> arrowBatches
+          >>> rdd // dataFrames( result.schema)
+          >>> appendToDelta( statement.schema)
+          >>> countRows)
 
     _ <- ZIO.log( s"Total records appended: $n")
 
   } yield ()
 
-  /*
-  val progress: ZPipeline[ . . . ] =
-    ZPipeline.contramap
-        ZIO.logWarning( s"Processing chunk $i of $chunkCount")
-   */
+   def logProgress( n: Long) = // : ZPipeline[ . . . ] =
+     ZPipeline.tap[ Any, Throwable, sql.ResultData](
+       result => ZIO.log( s"Processing chunk ${result.getChunkIndex} of $n"))
 
 
-  val httpStreams: ZPipeline[ Any, Throwable, sql.ExternalLink, Task[geny.Readable]] =
-    ZPipeline.map( link => ZIO.attempt( requests.get.stream( link.getExternalLink)))
-  // TODO: throws requests.RequestFailedException ("403 . . . expired")
+  val httpStreams: ZPipeline[ Any, Throwable, sql.ResultData, Task[geny.Readable]] =
+    ZPipeline.map(( result: sql.ResultData) => result.getExternalLinks.asScala)
+      .flattenIterables[ sql.ExternalLink]
+      .map( link => ZIO.attempt( requests.get.stream( link.getExternalLink)))
+    // TODO: throws requests.RequestFailedException ("403 . . . expired")
 
 
   val arrowBatches: ZPipeline[ Any, Throwable, Task[ geny.Readable], Task[ Iterator[ ArrowBatch]]] =
@@ -241,7 +208,7 @@ object SqlExecutionApp extends ZIOSparkAppDefault { // with Logging {
 
 
   def run =
-    ZIO.logLevel( LogLevel.Warning) {
+    ZIO.logLevel( LogLevel.Info) {
       totalRecordsAppended
         .provide(
           SqlExecutionService.layer,
