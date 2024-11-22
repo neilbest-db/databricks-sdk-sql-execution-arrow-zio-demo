@@ -30,6 +30,7 @@ import scala.collection.JavaConverters._
 
 import databricks._
 import warehouse._
+import statement._
 import execution._
 
 

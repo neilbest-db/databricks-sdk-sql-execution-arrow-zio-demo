@@ -2,12 +2,12 @@
 import com.databricks.sdk
 // import com.databricks.sdk.core.DatabricksException
 import com.databricks.sdk.service.sql
-// import org.apache.spark.sql.types.StructType
-// import scala.collection.JavaConverters._
+
 import zio._
 
 import databricks._
 import warehouse._
+import statement.SqlStatement
 
 trait SqlExecutionService {
 

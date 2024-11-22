@@ -2,12 +2,13 @@
 import com.databricks.sdk
 import com.databricks.sdk.core.DatabricksException
 import com.databricks.sdk.service.sql
-import org.apache.spark.sql.types.StructType
-import scala.collection.JavaConverters._
 import zio._
 import zio.stream.ZStream
 
+import scala.collection.JavaConverters._
+
 import databricks._
+import statement.SqlStatement
 
 case class SqlWarehouse(
   it:     sql.GetWarehouseResponse,
@@ -74,77 +75,3 @@ object SqlWarehouse {
 
   }
 }
-
-case class SqlStatement(
-
-  request: sql.ExecuteStatementRequest,
-
-  response: sql.StatementResponse,
-
-  warehouse: SqlWarehouse
-
-) {
-
-  def statement: String = request.getStatement
-
-  def id: String = response.getStatementId
-
-  def refresh: SqlStatement =
-    SqlStatement(
-      request,
-      warehouse.client.it
-        .statementExecution
-        .getStatement(
-          new sql.GetStatementRequest()
-            .setStatementId( id)),
-      warehouse.refresh)
-
-  /*
-   * only returns the first chunk; initial development
-   *
-
-  def links: Iterable[ sql.ExternalLink] =
-    response.getResult.getExternalLinks.asScala
-
-   */
-
-  def links: ZStream[Any, Throwable, sql.ExternalLink] =
-    ZStream.unfold( 0) {
-      // math.min( 12, chunkCount)
-      case i if i < chunkCount => Some( getChunk( i) -> (i + 1))
-      case _ => None
-    } mapConcat {
-      ( chunk: sql.ResultData) => chunk.getExternalLinks.asScala
-    } bufferUnbounded
-
-
-  def schema: StructType =
-    StructType.fromDDL(
-      response.getManifest.getSchema.getColumns.asScala
-        .map( ci => s"${ci.getName} ${ci.getTypeText}")
-        .mkString( ",\n"))
-
-  // def result: SqlStatementResult =
-  //   SqlStatementResult( links, schema)
-
-  lazy val chunkCount: Long =
-    response.getManifest.getTotalChunkCount
-
-  def getChunk( n: Long): sql.ResultData =
-    warehouse.client.it.statementExecution
-      .getStatementResultChunkN(
-        new sql.GetStatementResultChunkNRequest()
-          .setStatementId( id)
-          .setChunkIndex( n))
- 
-}
-
-/*
-case class SqlStatementResult(
-
-  links: Iterable[ sql.ExternalLink],
-
-  schema: StructType
-
-)
- */
