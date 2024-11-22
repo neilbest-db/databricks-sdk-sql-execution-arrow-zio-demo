@@ -1,7 +1,7 @@
 
 //> using scala 2.12.18
 
-//> using resourceDir ./resources
+// //> using resourceDir ./resources
 
 
 // # Databricks SDK

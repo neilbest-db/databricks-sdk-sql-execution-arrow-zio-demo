@@ -11,16 +11,20 @@ import databricks._
 import statement.SqlStatement
 
 case class SqlWarehouse(
+
   it:     sql.GetWarehouseResponse,
-  client: WorkspaceClient) {
+
+  client: WorkspaceClient
+
+) {
 
   def id: String = it.getId
 
   def name: String = it.getName
 
   def start: SqlWarehouse = {
+    // initial response type is `Void`
     client.it.warehouses.start( id).getResponse
-    // don't wait or capture because response type is `Void`
     refresh
   }
 

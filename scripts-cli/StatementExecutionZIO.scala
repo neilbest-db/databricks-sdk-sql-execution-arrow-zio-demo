@@ -15,24 +15,18 @@ import zio._
 import zio.spark.experimental.ZIOSparkAppDefault
 import zio.spark.parameter.localAllNodes
 import zio.spark.rdd.RDD
-import zio.spark.sql.{
-  fromSpark, SparkSession}
-
-import zio.stream.{
-  ZStream, ZPipeline, ZSink}
-
+import zio.spark.sql.{ fromSpark, SparkSession}
+import zio.stream.{ ZStream, ZPipeline, ZSink}
 import zio.logging.backend.SLF4J
 
 import scala.collection.JavaConverters._
 
 // import scribe.Logging
 
-
 import databricks._
 import warehouse._
 import statement._
 import execution._
-
 
 object StatementExecutionZIO extends ZIOSparkAppDefault {
     // with Logging {
@@ -101,27 +95,23 @@ object StatementExecutionZIO extends ZIOSparkAppDefault {
   val successfulExecution: ZIO[ SqlExecutionService, Throwable, SqlStatement] =
     for {
 
-    sqlExecutionService <- ZIO.service[ SqlExecutionService]
+      sqlExecutionService <- ZIO.service[ SqlExecutionService]
 
-    _ <- ZIO.when( os.exists( storageTarget))(
-      ZIO.log( s"Clearing storage target ${storageTarget}")
-        *> ZIO.attempt( os.remove.all( storageTarget)))
+      _ <- ZIO.when( os.exists( storageTarget))(
+        ZIO.log( s"Clearing storage target ${storageTarget}")
+          *> ZIO.attempt( os.remove.all( storageTarget)))
 
-    warehouseState <- sqlExecutionService.getWarehouseState.repeat( untilRunning)
+      warehouseState <- sqlExecutionService.getWarehouseState.repeat( untilRunning)
 
-    _ <- ZIO.unless(
-      warehouseState.equals( sql.State.RUNNING))(
-        ZIO.dieMessage(
-          s"Starting warehouse timed out in state ${warehouseState}."))
+      _ <- ZIO.unless( warehouseState.equals( sql.State.RUNNING))(
+        ZIO.dieMessage( s"Starting warehouse timed out in state ${warehouseState}."))
 
-    sqlExecution <-  sqlExecutionService.executeStatement( query)
+      sqlExecution <-  sqlExecutionService.executeStatement( query)
 
-    executionState <- sqlExecutionService.getState( sqlExecution).repeat( untilSucceeded)
+      executionState <- sqlExecutionService.getState( sqlExecution).repeat( untilSucceeded)
 
-    _ <- ZIO.unless(
-      executionState.equals( sql.StatementState.SUCCEEDED))(
-        ZIO.dieMessage(
-          s"Statement execution timed out in state ${executionState}."))
+      _ <- ZIO.unless( executionState.equals( sql.StatementState.SUCCEEDED))(
+        ZIO.dieMessage( s"Statement execution timed out in state ${executionState}."))
 
   } yield sqlExecution.refresh
 
@@ -129,16 +119,16 @@ object StatementExecutionZIO extends ZIOSparkAppDefault {
   val totalRecordsAppended: ZIO[ SqlExecutionService & SparkSession, Throwable, Unit] =
     for {
 
-    spark <- ZIO.service[ SparkSession]
       statement <- successfulExecution
 
-    _  <- fromSpark { spark =>
-      DeltaTable
-        .create( spark)
-        .addColumns( result.schema)
-        .location( storageTarget.toString)
-        .execute
-    }
+      spark <- ZIO.service[ SparkSession]
+
+      _  <- fromSpark { spark =>
+        DeltaTable
+          .create( spark)
+          .addColumns( statement.schema)
+          .location( storageTarget.toString)
+          .execute }
 
       n <- statement.results.run(
         logProgress( statement.totalChunkCount)
