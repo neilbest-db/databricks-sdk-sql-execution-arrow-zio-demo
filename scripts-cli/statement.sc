@@ -3,12 +3,14 @@ import com.databricks.sdk
 // import com.databricks.sdk.core.DatabricksException
 import com.databricks.sdk.service.sql
 import org.apache.spark.sql.types.StructType
+import zio.logging.LogAnnotation
 import zio.stream.ZStream
 
 import scala.collection.JavaConverters._
 
 import warehouse.SqlWarehouse
 
+def index( label: String) = LogAnnotation[ Long]( label, (_, i) => i, _.toString)
 
 case class SqlStatement(
 
@@ -50,10 +52,13 @@ case class SqlStatement(
           .setChunkIndex( n))
       .setChunkIndex( n)
 
-  def results: ZStream[Any, Throwable, sql.ResultData] =
-    ZStream.unfold( 0) {
-      case i if i < totalChunkCount => Some( resultChunkN( i) -> (i + 1))
-      case _ => None
-    } bufferUnbounded
- 
+  def externalLinks: ZStream[Any, Throwable, (sql.ExternalLink, Long)] =
+    ZStream.unfold( 0)(
+      { case i if i < totalChunkCount => Some( resultChunkN( i) -> (i + 1))
+        case _ => None })
+      .map( result => result.getExternalLinks.asScala)
+      .flattenIterables[ sql.ExternalLink]
+      .zipWithIndex
+      .bufferUnbounded
+
 }
