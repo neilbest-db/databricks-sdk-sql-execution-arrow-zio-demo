@@ -21,11 +21,24 @@ object ArrowPipeline {
 
   def index( label: String) = LogAnnotation[ Long]( label, (_, i) => i, _.toString)
 
+  val downloadSchedule =
+    Schedule.recurs(5) <* Schedule.recurWhileZIO(
+      (e: Throwable) => e match {
+        case e: requests.TimeoutException =>
+          ZIO.logWarning( s"Downloading result chunk timed out; retrying: $e") *>
+          ZIO.succeed( true)
+          // requests.RequestFailedException =>
+          // requests.RequestsException =>
+        case e =>
+          ZIO.logWarning( s"Downloading result chunk request failed: $e") *>
+          ZIO.succeed( false)})
+
+
   val download: ZPipeline[ Any, Throwable, (sql.ExternalLink, Long), (geny.Readable, Long)] =
     ZPipeline.mapZIOPar(12) {
       case ( link, i) =>
         ZIO.log( "Downloading result chunk") @@ index( "i")( i) *>
-        ZIO.attempt( ( requests.get.stream( link.getExternalLink), i))
+        ZIO.attempt( ( requests.get.stream( link.getExternalLink), i)).retry( downloadSchedule)
     }
 
   // TODO: throws requests.TimeoutException ("Request to https://<link>?<REDACTME> timed out. (readTimeout: 10000, connectTimout: 10000)")
