@@ -3,14 +3,11 @@ import com.databricks.sdk
 // import com.databricks.sdk.core.DatabricksException
 import com.databricks.sdk.service.sql
 import org.apache.spark.sql.types.StructType
-import zio.logging.LogAnnotation
 import zio.stream.ZStream
 
 import scala.collection.JavaConverters._
 
 import warehouse.SqlWarehouse
-
-def index( label: String) = LogAnnotation[ Long]( label, (_, i) => i, _.toString)
 
 case class SqlStatement(
 
