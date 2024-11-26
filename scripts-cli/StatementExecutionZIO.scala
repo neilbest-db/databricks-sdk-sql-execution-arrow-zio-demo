@@ -12,7 +12,7 @@ import zio.logging.backend.SLF4J
 
 import databricks._
 import execution._
-import pipeline._
+import pipeline.ArrowPipeline._
 import statement.SqlStatement
 import warehouse._
 
