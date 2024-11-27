@@ -18,12 +18,7 @@ import warehouse._
 
 object StatementExecutionZIO extends ZIOSparkAppDefault {
 
-  scribe.Logger.minimumLevels(
-    // "com.databricks.sdk" -> scribe.Level.Debug,   // show Databricks REST API calls
-    "org.apache.hadoop" -> scribe.Level.Info,
-    "org.apache.spark" -> scribe.Level.Error,        // make Spark be quiet!
-    "org.apache.parquet" -> scribe.Level.Warn,
-    "org.sparkproject.jetty" -> scribe.Level.Warn)
+  logger.setup()
 
   override val bootstrap: ZLayer[ZIOAppArgs, Any, Any] =
     Runtime.removeDefaultLoggers >>> SLF4J.slf4j
